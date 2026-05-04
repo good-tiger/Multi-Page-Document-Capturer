@@ -2,4 +2,3 @@ pillow
 mss
 pyautogui
 keyboard
-opendataloader-pdf[hybrid]
