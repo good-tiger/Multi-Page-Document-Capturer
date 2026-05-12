@@ -268,6 +268,118 @@ class PointSelector(_Overlay):
 
 
 # ===========================================================================
+# 선택 결과 시각화 오버레이
+# ===========================================================================
+class SelectionOverlay:
+    """선택된 캡처 영역과 클릭 좌표를 화면 위에 시각적으로 표시.
+
+    Windows 의 -transparentcolor 와 WS_EX_TRANSPARENT 플래그를 이용해
+    마우스 입력이 통과하는 투명 오버레이로 동작한다.
+    """
+
+    TRANS_COLOR = "magenta"
+    REGION_COLOR = "#ff3030"
+    POINT_COLOR = "#00d050"
+    LABEL_FONT = ("맑은 고딕", 10, "bold")
+
+    def __init__(self, master):
+        self.master = master
+        self.region: Optional[Tuple[int, int, int, int]] = None
+        self.point: Optional[Tuple[int, int]] = None
+
+        self.top = tk.Toplevel(master)
+        self.top.overrideredirect(True)
+        self.top.attributes("-topmost", True)
+        self.top.attributes("-transparentcolor", self.TRANS_COLOR)
+        self.top.configure(bg=self.TRANS_COLOR)
+
+        sw = self.top.winfo_screenwidth()
+        sh = self.top.winfo_screenheight()
+        self.top.geometry(f"{sw}x{sh}+0+0")
+
+        self.canvas = tk.Canvas(
+            self.top, width=sw, height=sh, bg=self.TRANS_COLOR,
+            highlightthickness=0,
+        )
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        self.top.update_idletasks()
+        self._make_click_through()
+        self.top.withdraw()
+
+    def _make_click_through(self):
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(self.top.winfo_id())
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            styles = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(
+                hwnd, GWL_EXSTYLE,
+                styles | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+            )
+        except Exception:
+            pass
+
+    def set_region(self, region: Optional[Tuple[int, int, int, int]]):
+        self.region = region
+        self._redraw()
+
+    def set_point(self, point: Optional[Tuple[int, int]]):
+        self.point = point
+        self._redraw()
+
+    def show(self):
+        if self.region is None and self.point is None:
+            return
+        self.top.deiconify()
+        self.top.attributes("-topmost", True)
+        self.top.lift()
+
+    def hide(self):
+        self.top.withdraw()
+
+    def _redraw(self):
+        self.canvas.delete("all")
+        if self.region:
+            l, t, w, h = self.region
+            self.canvas.create_rectangle(
+                l, t, l + w, t + h,
+                outline=self.REGION_COLOR, width=3,
+            )
+            ly = max(0, t - 20)
+            self.canvas.create_rectangle(
+                l, ly, l + 96, ly + 18,
+                fill=self.REGION_COLOR, outline=self.REGION_COLOR,
+            )
+            self.canvas.create_text(
+                l + 4, ly + 1, anchor="nw", text="캡처 영역",
+                fill="white", font=self.LABEL_FONT,
+            )
+        if self.point:
+            x, y = self.point
+            r = 14
+            self.canvas.create_oval(
+                x - r, y - r, x + r, y + r,
+                outline=self.POINT_COLOR, width=3,
+            )
+            self.canvas.create_line(
+                x - r - 6, y, x + r + 6, y,
+                fill=self.POINT_COLOR, width=2,
+            )
+            self.canvas.create_line(
+                x, y - r - 6, x, y + r + 6,
+                fill=self.POINT_COLOR, width=2,
+            )
+            self.canvas.create_text(
+                x + r + 8, y, anchor="w", text="클릭 좌표",
+                fill=self.POINT_COLOR, font=self.LABEL_FONT,
+            )
+        self.show()
+
+
+# ===========================================================================
 # 캡처 워커
 # ===========================================================================
 class CaptureWorker:
@@ -289,17 +401,20 @@ class CaptureWorker:
 
     def _run(self):
         cfg = self.cfg
-        cfg.save_dir.mkdir(parents=True, exist_ok=True)
+        # 지정 파일명의 하위 폴더를 만들고 그 안에 PDF / 이미지 폴더를 모두 저장한다.
+        target_dir = cfg.save_dir / cfg.filename
+        target_dir.mkdir(parents=True, exist_ok=True)
+        self.log(f"저장 폴더: {target_dir}")
 
         self._countdown(3)
         images = self._capture_pages()
-        pdf_path = self._save_pdf(images)
+        pdf_path = self._save_pdf(images, target_dir)
 
         if cfg.save_jpeg:
-            self._save_image_folder(images, cfg.save_dir / "jpeg",
+            self._save_image_folder(images, target_dir / "jpeg",
                                     "JPEG", "jpg", quality=92)
         if cfg.save_png:
-            self._save_image_folder(images, cfg.save_dir / "png",
+            self._save_image_folder(images, target_dir / "png",
                                     "PNG", "png")
 
         self.done(True, f"완료: {pdf_path}")
@@ -353,9 +468,9 @@ class CaptureWorker:
         else:
             pyautogui.hotkey(*keys)
 
-    def _save_pdf(self, images: List[Image.Image]) -> Path:
+    def _save_pdf(self, images: List[Image.Image], target_dir: Path) -> Path:
         cfg = self.cfg
-        pdf_path = cfg.save_dir / f"{cfg.filename}.pdf"
+        pdf_path = target_dir / f"{cfg.filename}.pdf"
         self.log(f"PDF 저장 준비 중 (목표 DPI={cfg.dpi})...")
 
         # 100 DPI 를 1.0배 기준으로 LANCZOS 업스케일링하여 PDF 실효 해상도를 키운다.
@@ -404,6 +519,8 @@ class App:
 
         self.region: Optional[Tuple[int, int, int, int]] = None
         self.click_point: Optional[Tuple[int, int]] = None
+
+        self.overlay = SelectionOverlay(root)
 
         self._build_ui()
 
@@ -519,6 +636,7 @@ class App:
 
     # ---- UI 핸들러 -------------------------------------------------------
     def _select_region(self):
+        self.overlay.hide()
         self.root.withdraw()
         self.root.update()
         time.sleep(0.25)
@@ -530,12 +648,15 @@ class App:
         self.root.lift()
         if sel is None:
             self.log("영역 선택이 취소되었습니다.")
+            self.overlay.show()
             return
         self.region = sel
         l, t, w, h = sel
         self.region_label.config(text=f"({l}, {t})  {w} × {h} px")
+        self.overlay.set_region(sel)
 
     def _select_click_point(self):
+        self.overlay.hide()
         self.root.withdraw()
         self.root.update()
         time.sleep(0.25)
@@ -547,9 +668,11 @@ class App:
         self.root.lift()
         if pt is None:
             self.log("좌표 선택이 취소되었습니다.")
+            self.overlay.show()
             return
         self.click_point = pt
         self.click_label.config(text=f"({pt[0]}, {pt[1]})")
+        self.overlay.set_point(pt)
 
     @staticmethod
     def _grab_screen():
@@ -588,6 +711,8 @@ class App:
             return
 
         self.run_btn.state(["disabled"])
+        # 오버레이가 캡처에 찍히지 않도록 캡처 동안 숨긴다.
+        self.overlay.hide()
         self.log("=" * 40)
         self.log("캡처를 시작합니다.")
 
@@ -658,6 +783,7 @@ class App:
     def _on_done(self, success: bool, message: str):
         def _ui():
             self.run_btn.state(["!disabled"])
+            self.overlay.show()
             if success:
                 messagebox.showinfo("완료", message)
             else:
