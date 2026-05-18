@@ -18,7 +18,7 @@
 ## 설치
 
 ```bash
-git clone https://github.com/<your-username>/Multi-Page-Document-Capturer.git
+git clone https://github.com/good-tiger/Multi-Page-Document-Capturer.git
 cd Multi-Page-Document-Capturer
 pip install -r requirements.txt
 ```
